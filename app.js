@@ -15,6 +15,14 @@
 
   var IMG = 'https://image.tmdb.org/t/p/';
   var DEFAULT_CATALOG = 'data/catalogo.json';
+  // Índices del catálogo en línea, en orden de preferencia. Dicen qué archivo está vigente.
+  var MANIFESTS = [
+    'https://api.appsdevxp.com/db/catalog_manifest.json',
+    'https://raw.githubusercontent.com/dev-mplus01/mplus01T/main/db/list/catalog_manifest.json',
+    'https://developerxploit.com/app/db/catalog_manifest.json'
+  ];
+  // server2 no permite lecturas desde otras páginas (CORS), por eso va al final.
+  var MIRROR_ORDER = ['server1', 'github', 'server2'];
   var ROW_SIZE = 40;
   var PAGE_SIZE = 60;
 
@@ -90,14 +98,66 @@
     };
   }
 
-  function loadCatalog() {
-    var url = getSetting('catalogUrl', '') || DEFAULT_CATALOG;
-    // Se lee como texto: algunos servidores lo envían como "x-gzip" aunque sea JSON plano.
+  // Prueba promesas en orden hasta que una funcione.
+  function firstOk(fns) {
+    return fns.reduce(function (p, fn) {
+      return p.catch(function () { return fn(); });
+    }, Promise.reject(new Error('sin fuentes')));
+  }
+
+  // Lee JSON plano o comprimido con gzip (el nombre ".json.gz" no dice cuál llega:
+  // server1 lo entrega plano y GitHub comprimido).
+  function fetchJson(url) {
     return fetch(url).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.text();
-    }).then(function (text) {
-      var data = JSON.parse(text);
+      return r.arrayBuffer();
+    }).then(function (buf) {
+      var bytes = new Uint8Array(buf);
+      if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
+        if (typeof DecompressionStream === 'undefined') throw new Error('gzip no soportado');
+        var stream = new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip'));
+        return new Response(stream).text();
+      }
+      return new TextDecoder('utf-8').decode(bytes);
+    }).then(function (text) { return JSON.parse(text); });
+  }
+
+  function loadOnline() {
+    var manifest = null;
+    return firstOk(MANIFESTS.map(function (u) {
+      return function () { return fetchJson(u); };
+    })).then(function (m) {
+      manifest = m.config_gz.prod;
+      var urls = manifest.urls || {};
+      return firstOk(MIRROR_ORDER.filter(function (k) {
+        return urls[k] && (!manifest.mirrors || manifest.mirrors[k] !== false);
+      }).map(function (k) {
+        return function () { return fetchJson(urls[k]); };
+      }));
+    }).then(function (data) {
+      var released = Number(manifest.releaseId);
+      state.source = 'en línea' + (released
+        ? ' · versión del ' + new Date(released).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' })
+        : '');
+      return data;
+    });
+  }
+
+  function loadLocal(url) {
+    return fetchJson(url).then(function (data) {
+      state.source = url === DEFAULT_CATALOG ? 'copia local' : 'URL personalizada';
+      return data;
+    });
+  }
+
+  // Orden: URL personalizada (Ajustes) → servidor original → copia local incluida.
+  function loadCatalog() {
+    var custom = getSetting('catalogUrl', '');
+    var sources = [];
+    if (custom) sources.push(function () { return loadLocal(custom); });
+    sources.push(loadOnline);
+    sources.push(function () { return loadLocal(DEFAULT_CATALOG); });
+    return firstOk(sources).then(function (data) {
       state.movies = (data.movies || []).map(function (m, i) { return toItem(m, 'movie', i); });
       state.series = (data.series || []).map(function (s, i) { return toItem(s, 'tv', i); });
       state.all = state.movies.concat(state.series);
@@ -105,7 +165,7 @@
       markNew(state.series, 'tv');
       document.getElementById('count').textContent =
         state.movies.length.toLocaleString('es-MX') + ' películas · ' +
-        state.series.length.toLocaleString('es-MX') + ' series';
+        state.series.length.toLocaleString('es-MX') + ' series · ' + state.source;
     });
   }
 
@@ -279,7 +339,8 @@
       field('omdbKey', 'Clave de API de OMDb', 'Para calificaciones de IMDb, Rotten Tomatoes y Metacritic. ' +
         'Gratis (1,000 consultas al día) en omdbapi.com → API Key.') +
       field('region', 'País para "Dónde ver"', 'Código de 2 letras: MX, US, ES, AR, CO…', 'MX') +
-      field('catalogUrl', 'URL del catálogo (opcional)', 'Vacío = usa data/catalogo.json incluido en la app.') +
+      field('catalogUrl', 'URL del catálogo (opcional)', 'Vacío = descarga el catálogo vigente del servidor original en cada carga; ' +
+        'si no responde, usa la copia local data/catalogo.json.') +
       '<button class="btn focusable" id="save">Guardar</button><span class="saved hidden" id="saved">Guardado ✓</span>' +
       '</div>';
     document.getElementById('save').addEventListener('click', function () {
