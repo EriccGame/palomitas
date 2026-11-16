@@ -310,7 +310,7 @@
 
   function renderSearch() {
     $main.innerHTML = '<div class="page-head"><h1 class="page-title">Buscar</h1></div>' +
-      '<div style="padding:0 48px"><input id="q" class="search-box focusable" type="text" ' +
+      '<div class="search-wrap"><input id="q" class="search-box focusable" type="text" ' +
       'placeholder="Título de película o serie…" autocomplete="off"></div>' +
       '<div class="grid" id="results"></div>';
     var input = document.getElementById('q');
@@ -329,7 +329,7 @@
     var hits = state.all.filter(function (i) { return i.search.indexOf(term) !== -1; })
       .sort(byDateDesc).slice(0, 120);
     box.innerHTML = hits.length ? hits.map(cardHtml).join('')
-      : '<div class="empty" style="padding:20px 6px">Sin resultados para "' + esc(q) + '".</div>';
+      : '<div class="empty inline">Sin resultados para "' + esc(q) + '".</div>';
   }
 
   function renderSettings() {
